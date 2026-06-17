@@ -1,0 +1,18 @@
+# Neos calls the NodeIndexerInterface on publish; point it at our queueing variant
+# so live publishes enqueue a job instead of blocking on a synchronous Meilisearch write.
+Neos\ContentRepository\Search\Indexer\NodeIndexerInterface:
+  className: CodeQ\Meilisearch\QueueIndexer\Indexer\NodeIndexer
+
+# Resolve the parent indexer from the IndexFactory with the configured index name,
+# matching the override already shipped by CodeQ.Search/Configuration/Objects.yaml.
+# Needed because the queue indexer injects the upstream indexer explicitly to perform
+# the real write at job execution time without re-queueing.
+CodeQ\Meilisearch\QueueIndexer\Indexer\NodeIndexer:
+  properties:
+    indexClient:
+      object:
+        factoryObjectName: Medienreaktor\Meilisearch\Factory\IndexFactory
+        factoryMethodName: create
+        arguments:
+          1:
+            setting: 'Medienreaktor.Meilisearch.indexName'

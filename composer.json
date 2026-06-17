@@ -1,0 +1,23 @@
+{
+    "name": "codeq/meilisearch-queueindexer",
+    "description": "Asynchronous node indexing for Medienreaktor.Meilisearch via the Flowpack JobQueue.",
+    "type": "neos-package",
+    "license": "MIT",
+    "require": {
+        "neos/flow": "^7.0 || ^8.0",
+        "neos/content-repository": "^7.0 || ^8.0",
+        "flowpack/jobqueue-common": "^3.0 || dev-master",
+        "medienreaktor/meilisearch": "dev-bugfix/combined-fixes"
+    },
+    "autoload": {
+        "psr-4": {
+            "CodeQ\\Meilisearch\\QueueIndexer\\": "Classes"
+        }
+    },
+    "extra": {
+        "installer-name": "CodeQ.Meilisearch.QueueIndexer",
+        "neos": {
+            "package-key": "CodeQ.Meilisearch.QueueIndexer"
+        }
+    }
+}
