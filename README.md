@@ -90,6 +90,35 @@ CodeQ:
 
 Set `enableLiveAsyncIndexing: false` to fall back to synchronous Medienreaktor indexing.
 
+## Scheduled Visibility Reconciliation
+
+`Medienreaktor.Meilisearch` keeps scheduled visibility reconciliation disabled
+by default. When that upstream feature is enabled, its
+`scheduledvisibility:reconcile` command delegates index and removal
+operations to `NodeIndexerInterface`. This package's decorator therefore puts
+those operations onto the live queue automatically; no second reconciliation
+command or queue setting is required here.
+
+The reconciliation command only submits jobs. Keep the worker running to apply
+them:
+
+```bash
+./flow nodeindexqueue:work --verbose
+```
+
+The normal snapshot build remains unchanged. Enabling live asynchronous
+indexing does not enable scheduled reconciliation by itself.
+
+Removal jobs persist the exact Meilisearch document identifier when they are
+enqueued. They can therefore delete the document even if the corresponding
+Neos `NodeData` has already disappeared before a worker executes the job.
+
+Jobs which were already queued by an older package version do not contain that
+identifier and continue through the legacy node-rehydration path. Drain the
+live queue before upgrading. If that cannot be guaranteed, perform a one-time
+index flush and complete rebuild after deploying the new worker so previously
+orphaned documents cannot remain searchable.
+
 ## Index Name Configuration
 
 The queue indexer resolves its own `indexClient` from `Medienreaktor.Meilisearch.indexName`. For a complete environment-specific setup, the consuming site should also configure the upstream Medienreaktor indexer/commands/query builder to use the same setting, for example:

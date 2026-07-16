@@ -57,7 +57,7 @@ class NodeIndexer extends UpstreamNodeIndexer
      * @param string|null $targetWorkspace
      * @param bool $indexAllDimensions
      * @param bool $indexFallbackDimensions
-     * @param array $targetDimensionCombination
+     * @param array<string, string[]> $targetDimensionCombination
      */
     public function indexNode(
         NodeInterface $node,
@@ -67,6 +67,9 @@ class NodeIndexer extends UpstreamNodeIndexer
         array $targetDimensionCombination = []
     ): void {
         if (!$this->shouldEnqueue($node, $targetWorkspace)) {
+            // The combined-fixes parent accepts the fifth argument. Released
+            // upstream versions ignore extra userland arguments safely.
+            // @phpstan-ignore-next-line
             parent::indexNode($node, $targetWorkspace, $indexAllDimensions, $indexFallbackDimensions, $targetDimensionCombination);
             return;
         }
@@ -86,6 +89,8 @@ class NodeIndexer extends UpstreamNodeIndexer
                 sprintf('Queueing indexing job failed (%s); falling back to synchronous indexing', $exception->getMessage()),
                 LogEnvironment::fromMethodName(__METHOD__)
             );
+            // See the dual-signature compatibility note above.
+            // @phpstan-ignore-next-line
             parent::indexNode($node, $targetWorkspace, $indexAllDimensions, $indexFallbackDimensions, $targetDimensionCombination);
         }
     }
@@ -100,7 +105,7 @@ class NodeIndexer extends UpstreamNodeIndexer
         try {
             $this->jobManager->queue(
                 NodeIndexQueueCommandController::LIVE_QUEUE_NAME,
-                new RemovalJob(null, $this->nodeAsArray($node))
+                new RemovalJob(null, $this->removalNodeAsArray($node))
             );
         } catch (\Throwable $exception) {
             $this->logger->warning(
@@ -131,6 +136,8 @@ class NodeIndexer extends UpstreamNodeIndexer
 
     /**
      * Minimal payload for job serialization.
+     *
+     * @return array<string, mixed>
      */
     protected function nodeAsArray(NodeInterface $node): array
     {
@@ -142,5 +149,18 @@ class NodeIndexer extends UpstreamNodeIndexer
             'nodeType' => $node->getNodeType()->getName(),
             'path' => $node->getPath(),
         ];
+    }
+
+    /**
+     * Persist the exact document identifier while the NodeData is still
+     * available. A deferred removal must not depend on rehydrating the node.
+     *
+     * @return array<string, mixed>
+     */
+    protected function removalNodeAsArray(NodeInterface $node): array
+    {
+        return array_merge($this->nodeAsArray($node), [
+            'documentIdentifier' => $this->generateUniqueNodeIdentifier($node),
+        ]);
     }
 }

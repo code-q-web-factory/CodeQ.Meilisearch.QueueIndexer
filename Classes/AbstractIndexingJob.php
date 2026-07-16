@@ -64,15 +64,16 @@ abstract class AbstractIndexingJob implements JobInterface
     protected $targetWorkspaceName;
 
     /**
-     * Minimal payload: persistenceObjectIdentifier, identifier, dimensions, workspace, nodeType, path.
+     * Minimal node payload. Removal jobs additionally carry the immutable
+     * Meilisearch documentIdentifier so execution does not require NodeData.
      *
-     * @var array
+     * @var array<string, mixed>
      */
     protected $node;
 
     /**
      * @param string|null $targetWorkspaceName
-     * @param array $node
+     * @param array<string, mixed> $node
      * @throws \Exception
      */
     public function __construct(?string $targetWorkspaceName, array $node)

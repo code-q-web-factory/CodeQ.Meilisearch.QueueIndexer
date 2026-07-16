@@ -17,17 +17,26 @@ class RemovalJob extends AbstractIndexingJob
 {
     public function execute(QueueInterface $queue, Message $message): bool
     {
+        if (
+            isset($this->node['documentIdentifier'])
+            && is_string($this->node['documentIdentifier'])
+            && $this->node['documentIdentifier'] !== ''
+        ) {
+            $this->nodeIndexer->removeDocumentByIdentifier($this->node['documentIdentifier']);
+            return true;
+        }
+
+        // Compatibility path for jobs which were already queued before the
+        // immutable document identifier was added to the payload.
         /** @var NodeData $nodeData */
         $nodeData = $this->nodeDataRepository->findByIdentifier($this->node['persistenceObjectIdentifier']);
 
         if (!$nodeData instanceof NodeData) {
-            // NodeData already gone; the Meilisearch document is keyed by
-            // `<nodeIdentifier>_<dimensionsHash>`. Build a minimal fake NodeData
-            // here would require importing the package's FakeNodeDataFactory;
-            // for now we skip - the document will be picked up by the next
-            // full `nodeindex:build` if it was not deleted cleanly.
             $this->logger->notice(
-                sprintf('NodeData for node %s not found, skipping removal job', $this->node['identifier']),
+                sprintf(
+                    'Legacy removal job for node %s has no document identifier and its NodeData is gone; skipping',
+                    $this->node['identifier']
+                ),
                 LogEnvironment::fromMethodName(__METHOD__)
             );
             return true;
