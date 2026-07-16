@@ -7,7 +7,7 @@
         "neos/flow": "^7.0 || ^8.0",
         "neos/content-repository": "^7.0 || ^8.0",
         "flowpack/jobqueue-common": "^3.0 || dev-master",
-        "medienreaktor/meilisearch": "^2.7 || dev-bugfix/combined-fixes"
+        "medienreaktor/meilisearch": "dev-bugfix/combined-fixes"
     },
     "autoload": {
         "psr-4": {

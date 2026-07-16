@@ -67,10 +67,13 @@ class NodeIndexer extends UpstreamNodeIndexer
         array $targetDimensionCombination = []
     ): void {
         if (!$this->shouldEnqueue($node, $targetWorkspace)) {
-            // The combined-fixes parent accepts the fifth argument. Released
-            // upstream versions ignore extra userland arguments safely.
-            // @phpstan-ignore-next-line
-            parent::indexNode($node, $targetWorkspace, $indexAllDimensions, $indexFallbackDimensions, $targetDimensionCombination);
+            $this->indexSynchronously(
+                $node,
+                $targetWorkspace,
+                $indexAllDimensions,
+                $indexFallbackDimensions,
+                $targetDimensionCombination
+            );
             return;
         }
 
@@ -89,10 +92,42 @@ class NodeIndexer extends UpstreamNodeIndexer
                 sprintf('Queueing indexing job failed (%s); falling back to synchronous indexing', $exception->getMessage()),
                 LogEnvironment::fromMethodName(__METHOD__)
             );
-            // See the dual-signature compatibility note above.
-            // @phpstan-ignore-next-line
-            parent::indexNode($node, $targetWorkspace, $indexAllDimensions, $indexFallbackDimensions, $targetDimensionCombination);
+            $this->indexSynchronously(
+                $node,
+                $targetWorkspace,
+                $indexAllDimensions,
+                $indexFallbackDimensions,
+                $targetDimensionCombination
+            );
         }
+    }
+
+    /**
+     * Call the concrete parent implementation without re-entering this
+     * decorator. The combined-fixes branch accepts a fifth target-dimension
+     * argument while released Neos 7/8 upstream versions currently accept four.
+     *
+     * @param string|null $targetWorkspace
+     * @param array<string, string[]> $targetDimensionCombination
+     */
+    protected function indexSynchronously(
+        NodeInterface $node,
+        $targetWorkspace,
+        bool $indexAllDimensions,
+        bool $indexFallbackDimensions,
+        array $targetDimensionCombination
+    ): void {
+        $arguments = [
+            $node,
+            $targetWorkspace,
+            $indexAllDimensions,
+            $indexFallbackDimensions,
+        ];
+        $parentMethod = new \ReflectionMethod(UpstreamNodeIndexer::class, 'indexNode');
+        if ($parentMethod->getNumberOfParameters() >= 5) {
+            $arguments[] = $targetDimensionCombination;
+        }
+        $parentMethod->invokeArgs($this, $arguments);
     }
 
     public function removeNode(NodeInterface $node): void

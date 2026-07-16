@@ -27,6 +27,10 @@ If the package is not available on Packagist yet, add the repository explicitly:
 
 This package expects `medienreaktor/meilisearch` to be installed and configured by the site package. Projects that use a forked Medienreaktor package must add the corresponding VCS repository in the root `composer.json`.
 
+Version 0.2 currently requires `dev-bugfix/combined-fixes`, which contains the
+identifier-based removal API used by deferred removal jobs. This constraint can
+be relaxed after that API is included in an upstream release.
+
 ## Queue Configuration
 
 The default configuration uses a Doctrine queue named `CodeQ.Meilisearch.QueueIndexer.Live`:
