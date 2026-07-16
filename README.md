@@ -63,11 +63,17 @@ Drain the live indexing queue:
 ./flow nodeindexqueue:work --verbose
 ```
 
-Enqueue all fulltext-root documents from the live workspace:
+Enqueue all fulltext-root documents from every allowed content-dimension
+combination in the live workspace:
 
 ```bash
 ./flow nodeindexqueue:build --verbose
 ```
+
+Snapshot jobs retain their explicit target dimension until execution. This
+matches `nodeindex:build`, including fallback/shine-through variants whose
+Meilisearch document hash must represent the requested dimension rather than
+the underlying fallback node.
 
 Inspect queue state:
 

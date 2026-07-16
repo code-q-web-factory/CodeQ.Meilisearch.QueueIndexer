@@ -15,6 +15,38 @@ use Neos\Flow\Log\Utility\LogEnvironment;
  */
 class IndexingJob extends AbstractIndexingJob
 {
+    /**
+     * Keep these defaults for live-publish jobs and jobs serialized by package
+     * versions before dimension-aware snapshot builds were introduced.
+     *
+     * @var bool
+     */
+    protected $indexAllDimensions = true;
+
+    /** @var bool */
+    protected $indexFallbackDimensions = true;
+
+    /** @var array<string, string[]> */
+    protected $targetDimensionCombination = [];
+
+    /**
+     * @param array<string, mixed> $node
+     * @param array<string, string[]> $targetDimensionCombination
+     * @throws \Exception
+     */
+    public function __construct(
+        ?string $targetWorkspaceName,
+        array $node,
+        bool $indexAllDimensions = true,
+        bool $indexFallbackDimensions = true,
+        array $targetDimensionCombination = []
+    ) {
+        parent::__construct($targetWorkspaceName, $node);
+        $this->indexAllDimensions = $indexAllDimensions;
+        $this->indexFallbackDimensions = $indexFallbackDimensions;
+        $this->targetDimensionCombination = $targetDimensionCombination;
+    }
+
     public function execute(QueueInterface $queue, Message $message): bool
     {
         /** @var NodeData $nodeData */
@@ -29,11 +61,14 @@ class IndexingJob extends AbstractIndexingJob
             return true;
         }
 
+        $dimensions = $this->targetDimensionCombination !== []
+            ? $this->targetDimensionCombination
+            : $this->node['dimensions'];
         $context = $this->contextFactory->create([
             'workspaceName' => $this->targetWorkspaceName ?: $nodeData->getWorkspace()->getName(),
             'invisibleContentShown' => true,
             'inaccessibleContentShown' => false,
-            'dimensions' => $this->node['dimensions'],
+            'dimensions' => $dimensions,
         ]);
 
         $node = $this->nodeFactory->createFromNodeData($nodeData, $context);
@@ -45,7 +80,13 @@ class IndexingJob extends AbstractIndexingJob
             return true;
         }
 
-        $this->nodeIndexer->indexNode($node, $this->targetWorkspaceName);
+        $this->nodeIndexer->indexNode(
+            $node,
+            $this->targetWorkspaceName,
+            $this->indexAllDimensions,
+            $this->indexFallbackDimensions,
+            $this->targetDimensionCombination
+        );
         return true;
     }
 

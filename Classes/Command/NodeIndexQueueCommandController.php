@@ -9,6 +9,7 @@ use Flowpack\JobQueue\Common\Exception;
 use Flowpack\JobQueue\Common\Job\JobManager;
 use Flowpack\JobQueue\Common\Queue\QueueManager;
 use Neos\ContentRepository\Domain\Model\NodeInterface;
+use Neos\ContentRepository\Domain\Service\ContentDimensionCombinator;
 use Neos\ContentRepository\Domain\Service\ContextFactoryInterface;
 use Neos\Flow\Annotations as Flow;
 use Neos\Flow\Cli\CommandController;
@@ -59,6 +60,12 @@ class NodeIndexQueueCommandController extends CommandController
      * @var ContextFactoryInterface
      */
     protected $contextFactory;
+
+    /**
+     * @Flow\Inject
+     * @var ContentDimensionCombinator
+     */
+    protected $contentDimensionCombinator;
 
     /**
      * @Flow\Inject
@@ -161,7 +168,8 @@ class NodeIndexQueueCommandController extends CommandController
     }
 
     /**
-     * Enqueue one IndexingJob per fulltext-root document in the live workspace.
+     * Enqueue one IndexingJob per fulltext-root document and allowed dimension
+     * combination in the live workspace.
      *
      * Use this as a memory-safe alternative to `./flow nodeindex:build`. Once it
      * returns, start a worker to actually process the jobs:
@@ -179,15 +187,37 @@ class NodeIndexQueueCommandController extends CommandController
      */
     public function buildCommand(bool $verbose = false): void
     {
-        $context = $this->contextFactory->create(['workspaceName' => 'live']);
-        $rootNode = $context->getRootNode();
-        if ($rootNode === null) {
-            $this->outputLine('<error>Live workspace has no root node.</error>');
-            $this->quit(1);
+        $dimensionCombinations = $this->contentDimensionCombinator->getAllAllowedCombinations();
+        if ($dimensionCombinations === []) {
+            $dimensionCombinations = [[]];
         }
 
         $this->outputLine('Enqueueing indexing jobs onto <b>%s</b>...', [self::LIVE_QUEUE_NAME]);
-        $enqueued = $this->enqueueTreeRecursively($rootNode, 0, $verbose);
+        $enqueued = 0;
+
+        foreach ($dimensionCombinations as $targetDimensionCombination) {
+            $contextProperties = ['workspaceName' => 'live'];
+            if ($targetDimensionCombination !== []) {
+                $contextProperties['dimensions'] = $targetDimensionCombination;
+            }
+
+            $this->outputLine('  Dimension: %s', [self::formatDimensionCombination($targetDimensionCombination)]);
+            $context = $this->contextFactory->create($contextProperties);
+            $rootNode = $context->getRootNode();
+            if ($rootNode === null) {
+                $this->outputLine('<error>Live workspace has no root node.</error>');
+                $this->quit(1);
+            }
+
+            $enqueued = $this->enqueueTreeRecursively(
+                $rootNode,
+                $enqueued,
+                $verbose,
+                $targetDimensionCombination
+            );
+            $this->persistenceManager->clearState();
+        }
+
         $this->outputLine('<success>Enqueued %d job%s.</success>', [$enqueued, $enqueued === 1 ? '' : 's']);
         $this->outputLine('Drain with: ./flow nodeindexqueue:work --verbose');
     }
@@ -196,19 +226,28 @@ class NodeIndexQueueCommandController extends CommandController
      * Depth-first walk that enqueues an IndexingJob at every fulltext-root.
      * Returns the cumulative enqueue count so the caller can report a total.
      */
-    protected function enqueueTreeRecursively(NodeInterface $node, int $counter, bool $verbose): int
-    {
+    protected function enqueueTreeRecursively(
+        NodeInterface $node,
+        int $counter,
+        bool $verbose,
+        array $targetDimensionCombination = []
+    ): int {
         if (self::isFulltextRoot($node)) {
             $payload = [
                 'persistenceObjectIdentifier' => $this->persistenceManager->getIdentifierByObject($node->getNodeData()),
                 'identifier' => $node->getIdentifier(),
-                'dimensions' => $node->getContext()->getDimensions(),
+                'dimensions' => $targetDimensionCombination !== []
+                    ? $targetDimensionCombination
+                    : $node->getContext()->getDimensions(),
                 'workspace' => $node->getWorkspace()->getName(),
                 'nodeType' => $node->getNodeType()->getName(),
                 'path' => $node->getPath(),
             ];
             try {
-                $this->jobManager->queue(self::LIVE_QUEUE_NAME, new IndexingJob(null, $payload));
+                $this->jobManager->queue(
+                    self::LIVE_QUEUE_NAME,
+                    new IndexingJob(null, $payload, false, false, $targetDimensionCombination)
+                );
             } catch (\Throwable $exception) {
                 $this->logger->error(
                     sprintf('Failed to enqueue indexing job for %s: %s', $node->getPath(), $exception->getMessage()),
@@ -225,7 +264,12 @@ class NodeIndexQueueCommandController extends CommandController
         }
 
         foreach ($node->findChildNodes() as $childNode) {
-            $counter = $this->enqueueTreeRecursively($childNode, $counter, $verbose);
+            $counter = $this->enqueueTreeRecursively(
+                $childNode,
+                $counter,
+                $verbose,
+                $targetDimensionCombination
+            );
         }
 
         return $counter;
@@ -252,6 +296,20 @@ class NodeIndexQueueCommandController extends CommandController
             $i++;
         }
         return sprintf('%.1f %s', $bytes, $units[$i]);
+    }
+
+    protected static function formatDimensionCombination(array $dimensionCombination): string
+    {
+        if ($dimensionCombination === []) {
+            return '(none)';
+        }
+
+        $labels = [];
+        foreach ($dimensionCombination as $dimensionName => $dimensionValues) {
+            $labels[] = sprintf('%s: %s', $dimensionName, implode(',', $dimensionValues));
+        }
+
+        return implode('; ', $labels);
     }
 
     /**
