@@ -14,12 +14,46 @@ use PHPUnit\Framework\TestCase;
 
 class RemovalJobTest extends TestCase
 {
-    public function testRemovalDoesNotNeedNodeDataWhenDocumentIdentifierWasPersisted(): void
+    public function testRemovalReplacesPersistedVariantsWithoutNodeData(): void
+    {
+        $dimensionCombinations = [
+            ['language' => ['de']],
+            ['language' => ['de'], 'country' => ['at']],
+        ];
+        $nodeIndexer = $this->createMock(NodeIndexer::class);
+        $nodeIndexer->expects(self::once())
+            ->method('replaceVariants')
+            ->with('document-aggregate', $dimensionCombinations);
+        $nodeIndexer->expects(self::once())->method('flush');
+        $nodeIndexer->expects(self::never())->method('removeDocumentByIdentifier');
+
+        $nodeDataRepository = $this->createMock(NodeDataRepository::class);
+        $nodeDataRepository->expects(self::never())->method('findByIdentifier');
+
+        $queuedJob = new RemovalJob(null, [
+            'documentAggregateIdentifier' => 'document-aggregate',
+            'dimensionCombinations' => $dimensionCombinations,
+        ]);
+        $job = unserialize(serialize($queuedJob));
+        self::assertInstanceOf(RemovalJob::class, $job);
+        $this->inject($job, 'nodeIndexer', $nodeIndexer);
+        $this->inject($job, 'nodeDataRepository', $nodeDataRepository);
+
+        $result = $job->execute(
+            $this->createMock(QueueInterface::class),
+            new Message('message-id', new \ArrayObject())
+        );
+
+        self::assertTrue($result);
+    }
+
+    public function testLegacyDocumentIdentifierRemovalIsFlushed(): void
     {
         $nodeIndexer = $this->createMock(NodeIndexer::class);
         $nodeIndexer->expects(self::once())
             ->method('removeDocumentByIdentifier')
             ->with('document-aggregate_language-de-hash');
+        $nodeIndexer->expects(self::once())->method('flush');
 
         $nodeDataRepository = $this->createMock(NodeDataRepository::class);
         $nodeDataRepository->expects(self::never())->method('findByIdentifier');

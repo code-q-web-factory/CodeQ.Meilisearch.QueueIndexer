@@ -138,9 +138,11 @@ class NodeIndexer extends UpstreamNodeIndexer
         }
 
         try {
+            $node = $this->requireTraversable($node);
+            $fulltextRoot = $this->findFulltextRoot($node) ?? $node;
             $this->jobManager->queue(
                 NodeIndexQueueCommandController::LIVE_QUEUE_NAME,
-                new RemovalJob(null, $this->removalNodeAsArray($node))
+                new RemovalJob(null, $this->removalNodeAsArray($node, $fulltextRoot))
             );
         } catch (\Throwable $exception) {
             $this->logger->warning(
@@ -187,15 +189,17 @@ class NodeIndexer extends UpstreamNodeIndexer
     }
 
     /**
-     * Persist the exact document identifier while the NodeData is still
-     * available. A deferred removal must not depend on rehydrating the node.
+     * Persist the fulltext root and affected dimension combinations while the
+     * NodeData is still available. A deferred removal must not depend on
+     * rehydrating the node.
      *
      * @return array<string, mixed>
      */
-    protected function removalNodeAsArray(NodeInterface $node): array
+    protected function removalNodeAsArray(NodeInterface $node, NodeInterface $fulltextRoot): array
     {
         return array_merge($this->nodeAsArray($node), [
-            'documentIdentifier' => $this->generateUniqueNodeIdentifier($node),
+            'documentAggregateIdentifier' => (string) $fulltextRoot->getNodeAggregateIdentifier(),
+            'dimensionCombinations' => $this->dimensionsService->getDimensionCombinationsForIndexing($fulltextRoot),
         ]);
     }
 }

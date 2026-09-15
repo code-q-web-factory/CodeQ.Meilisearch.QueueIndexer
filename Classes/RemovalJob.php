@@ -18,16 +18,33 @@ class RemovalJob extends AbstractIndexingJob
     public function execute(QueueInterface $queue, Message $message): bool
     {
         if (
+            isset($this->node['documentAggregateIdentifier'], $this->node['dimensionCombinations'])
+            && is_string($this->node['documentAggregateIdentifier'])
+            && $this->node['documentAggregateIdentifier'] !== ''
+            && is_array($this->node['dimensionCombinations'])
+        ) {
+            $this->nodeIndexer->replaceVariants(
+                $this->node['documentAggregateIdentifier'],
+                $this->node['dimensionCombinations']
+            );
+            $this->nodeIndexer->flush();
+            return true;
+        }
+
+        // Compatibility path for jobs which were already queued with only an
+        // immutable document identifier.
+        if (
             isset($this->node['documentIdentifier'])
             && is_string($this->node['documentIdentifier'])
             && $this->node['documentIdentifier'] !== ''
         ) {
             $this->nodeIndexer->removeDocumentByIdentifier($this->node['documentIdentifier']);
+            $this->nodeIndexer->flush();
             return true;
         }
 
-        // Compatibility path for jobs which were already queued before the
-        // immutable document identifier was added to the payload.
+        // Compatibility path for jobs which were queued before either
+        // immutable removal payload was added.
         /** @var NodeData $nodeData */
         $nodeData = $this->nodeDataRepository->findByIdentifier($this->node['persistenceObjectIdentifier']);
 
@@ -60,6 +77,7 @@ class RemovalJob extends AbstractIndexingJob
         }
 
         $this->nodeIndexer->removeNode($node);
+        $this->nodeIndexer->flush();
         return true;
     }
 

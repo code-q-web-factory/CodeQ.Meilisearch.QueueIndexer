@@ -119,15 +119,19 @@ them:
 The normal snapshot build remains unchanged. Enabling live asynchronous
 indexing does not enable scheduled reconciliation by itself.
 
-Removal jobs persist the exact Meilisearch document identifier when they are
-enqueued. They can therefore delete the document even if the corresponding
-Neos `NodeData` has already disappeared before a worker executes the job.
+Removal jobs persist the fulltext-root aggregate identifier and every affected
+dimension combination when they are enqueued. At execution time they replay
+`replaceVariants()` against the live workspace, so deleting a content node
+refreshes its document and deleting a variant preserves unrelated languages.
+The worker explicitly flushes the upstream write buffer after every indexing
+and removal job so changes reach Meilisearch immediately.
 
-Jobs which were already queued by an older package version do not contain that
-identifier and continue through the legacy node-rehydration path. Drain the
-live queue before upgrading. If that cannot be guaranteed, perform a one-time
-index flush and complete rebuild after deploying the new worker so previously
-orphaned documents cannot remain searchable.
+Jobs queued by version 0.2 contain only an immutable document identifier. They
+continue to use identifier-based deletion and are flushed immediately. Older
+jobs without either immutable payload continue through the legacy
+node-rehydration path. Drain the live queue before upgrading. If that cannot be
+guaranteed, perform a one-time index flush and complete rebuild after deploying
+the new worker so previously orphaned documents cannot remain searchable.
 
 ## Index Name Configuration
 

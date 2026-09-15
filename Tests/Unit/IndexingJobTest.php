@@ -54,6 +54,7 @@ class IndexingJobTest extends TestCase
         $nodeIndexer->expects(self::once())
             ->method('indexNode')
             ->with($node, null, false, false, $targetDimensions);
+        $nodeIndexer->expects(self::once())->method('flush');
 
         $job = new IndexingJob(
             null,

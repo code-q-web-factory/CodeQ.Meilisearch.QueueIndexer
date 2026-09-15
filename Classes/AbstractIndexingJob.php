@@ -64,8 +64,8 @@ abstract class AbstractIndexingJob implements JobInterface
     protected $targetWorkspaceName;
 
     /**
-     * Minimal node payload. Removal jobs additionally carry the immutable
-     * Meilisearch documentIdentifier so execution does not require NodeData.
+     * Minimal node payload. Removal jobs additionally carry the fulltext-root
+     * aggregate and affected dimensions so execution does not require NodeData.
      *
      * @var array<string, mixed>
      */

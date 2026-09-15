@@ -87,6 +87,7 @@ class IndexingJob extends AbstractIndexingJob
             $this->indexFallbackDimensions,
             $this->targetDimensionCombination
         );
+        $this->nodeIndexer->flush();
         return true;
     }
 

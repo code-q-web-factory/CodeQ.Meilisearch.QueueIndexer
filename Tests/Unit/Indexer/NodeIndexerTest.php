@@ -25,32 +25,52 @@ use PHPUnit\Framework\TestCase;
 
 class NodeIndexerTest extends TestCase
 {
-    public function testRemovalPayloadContainsTheExactGeneratedDocumentIdentifier(): void
+    public function testRemovalPayloadContainsTheFulltextRootAndAffectedDimensions(): void
     {
+        $dimensionCombinations = [
+            ['language' => ['de']],
+            ['language' => ['de'], 'country' => ['at']],
+        ];
         $nodeData = $this->createMock(NodeData::class);
         $context = $this->createMock(Context::class);
         $context->method('getDimensions')->willReturn(['language' => ['de']]);
         $context->method('getWorkspaceName')->willReturn('live');
         $workspace = $this->createMock(Workspace::class);
         $workspace->method('getName')->willReturn('live');
-        $nodeType = $this->createMock(NodeType::class);
-        $nodeType->method('getName')->willReturn('Neos.Neos:Document');
+        $contentNodeType = $this->createMock(NodeType::class);
+        $contentNodeType->method('getName')->willReturn('Neos.Neos:Content');
+        $contentNodeType->method('hasConfiguration')->with('search')->willReturn(false);
+        $documentNodeType = $this->createMock(NodeType::class);
+        $documentNodeType->method('hasConfiguration')->with('search')->willReturn(true);
+        $documentNodeType->method('getConfiguration')->with('search')->willReturn([
+            'fulltext' => ['isRoot' => true],
+        ]);
+
+        $fulltextRoot = $this->createMock(Node::class);
+        $fulltextRoot->method('getNodeType')->willReturn($documentNodeType);
+        $fulltextRoot->method('getNodeAggregateIdentifier')->willReturn(
+            NodeAggregateIdentifier::fromString('document-aggregate')
+        );
 
         $node = $this->createMock(Node::class);
         $node->method('getNodeData')->willReturn($nodeData);
-        $node->method('getIdentifier')->willReturn('document-aggregate');
+        $node->method('getIdentifier')->willReturn('content-aggregate');
         $node->method('getNodeAggregateIdentifier')->willReturn(
-            NodeAggregateIdentifier::fromString('document-aggregate')
+            NodeAggregateIdentifier::fromString('content-aggregate')
         );
         $node->method('getContext')->willReturn($context);
         $node->method('getWorkspace')->willReturn($workspace);
-        $node->method('getNodeType')->willReturn($nodeType);
-        $node->method('getPath')->willReturn('/sites/example/document');
+        $node->method('getNodeType')->willReturn($contentNodeType);
+        $node->method('getPath')->willReturn('/sites/example/document/content');
+        $node->method('findParentNode')->willReturn($fulltextRoot);
 
         $persistenceManager = $this->createMock(PersistenceManagerInterface::class);
         $persistenceManager->method('getIdentifierByObject')->with($nodeData)->willReturn('persistence-id');
         $dimensionsService = $this->createMock(DimensionsService::class);
-        $dimensionsService->method('hashByNode')->with($node)->willReturn('language-de-hash');
+        $dimensionsService->expects(self::once())
+            ->method('getDimensionCombinationsForIndexing')
+            ->with($fulltextRoot)
+            ->willReturn($dimensionCombinations);
         $jobManager = $this->createMock(JobManager::class);
         $jobManager->expects(self::once())
             ->method('queue')
@@ -62,9 +82,14 @@ class NodeIndexerTest extends TestCase
                     $nodeProperty->setAccessible(true);
                     $payload = $nodeProperty->getValue($job);
                     self::assertIsArray($payload);
+                    self::assertArrayNotHasKey('documentIdentifier', $payload);
+                    self::assertSame('document-aggregate', $payload['documentAggregateIdentifier']);
                     self::assertSame(
-                        'document-aggregate_language-de-hash',
-                        $payload['documentIdentifier']
+                        [
+                            ['language' => ['de']],
+                            ['language' => ['de'], 'country' => ['at']],
+                        ],
+                        $payload['dimensionCombinations']
                     );
                     self::assertSame('persistence-id', $payload['persistenceObjectIdentifier']);
                     self::assertSame(['language' => ['de']], $payload['dimensions']);
@@ -105,11 +130,9 @@ class NodeIndexerTest extends TestCase
 
         $indexClient = $this->createMock(MeilisearchIndex::class);
         $indexClient->expects(self::once())
-            ->method('findAllIdentifiersByIdentifierAndDimensionsHash')
-            ->with('document-aggregate', 'language-en-hash')
-            ->willReturn([]);
-        $indexClient->expects(self::once())->method('deleteDocuments')->with([]);
-        $indexClient->expects(self::once())->method('addDocuments')->with([]);
+            ->method('deleteDocuments')
+            ->with(['document-aggregate_language-en-hash']);
+        $indexClient->expects(self::never())->method('addDocuments');
 
         $variantContext = $this->createMock(Context::class);
         $variantContext->method('getNodeByIdentifier')->with('document-aggregate')->willReturn(null);
@@ -127,6 +150,7 @@ class NodeIndexerTest extends TestCase
         $method = new \ReflectionMethod(NodeIndexer::class, 'indexSynchronously');
         $method->setAccessible(true);
         $method->invoke($nodeIndexer, $node, null, false, false, $targetDimensions);
+        $nodeIndexer->flush();
     }
 
     private function inject(object $target, string $className, string $propertyName, object $value): void
