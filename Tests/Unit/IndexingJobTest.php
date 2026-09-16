@@ -20,6 +20,24 @@ use PHPUnit\Framework\TestCase;
 
 class IndexingJobTest extends TestCase
 {
+    public function testImmutableVariantRepairDoesNotRehydrateNodeData(): void
+    {
+        $combinations = [['language' => ['de']], ['language' => ['de_AT', 'de']]];
+        $indexer = $this->createMock(NodeIndexer::class);
+        $indexer->expects(self::once())->method('replaceVariants')->with('old-root', $combinations);
+        $indexer->expects(self::once())->method('flush');
+        $repository = $this->createMock(NodeDataRepository::class);
+        $repository->expects(self::never())->method('findByIdentifier');
+        $job = unserialize(serialize(new IndexingJob('live', [
+            'documentAggregateIdentifier' => 'old-root',
+            'dimensionCombinations' => $combinations,
+        ])));
+        self::assertInstanceOf(IndexingJob::class, $job);
+        $this->inject($job, 'nodeIndexer', $indexer);
+        $this->inject($job, 'nodeDataRepository', $repository);
+        self::assertTrue($job->execute($this->createMock(QueueInterface::class), new Message('message', new \ArrayObject())));
+    }
+
     public function testSnapshotJobForwardsTargetDimensionInsteadOfFallbackNodeDimension(): void
     {
         $targetDimensions = ['language' => ['de_CH']];

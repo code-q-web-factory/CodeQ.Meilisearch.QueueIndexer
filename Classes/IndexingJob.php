@@ -11,7 +11,7 @@ use Neos\ContentRepository\Domain\Model\NodeInterface;
 use Neos\Flow\Log\Utility\LogEnvironment;
 
 /**
- * Executes a single deferred `indexNode` call against Medienreaktor.Meilisearch.
+ * Replaces immutable live variants, or replays a legacy deferred `indexNode` call.
  */
 class IndexingJob extends AbstractIndexingJob
 {
@@ -49,6 +49,15 @@ class IndexingJob extends AbstractIndexingJob
 
     public function execute(QueueInterface $queue, Message $message): bool
     {
+        if (isset($this->node['documentAggregateIdentifier'], $this->node['dimensionCombinations'])) {
+            $this->nodeIndexer->replaceVariants(
+                $this->node['documentAggregateIdentifier'],
+                $this->node['dimensionCombinations']
+            );
+            $this->nodeIndexer->flush();
+            return true;
+        }
+
         /** @var NodeData $nodeData */
         $nodeData = $this->nodeDataRepository->findByIdentifier($this->node['persistenceObjectIdentifier']);
         if (!$nodeData instanceof NodeData) {

@@ -16,8 +16,9 @@ use Psr\Log\LoggerInterface;
 /**
  * Shared state for IndexingJob and RemovalJob.
  *
- * Payload carries only what is needed to rehydrate the node at execution
- * time. The actual indexing call is delegated to the upstream (non-queued)
+ * New runtime payloads carry immutable root identifiers and target dimensions.
+ * Older jobs retain their node-rehydration payloads for compatibility.
+ * The actual indexing call is delegated to the upstream (non-queued)
  * NodeIndexer; dependency injection resolves that class to the parent rather
  * than this package's override (see Objects.yaml in CodeQ.Search).
  */
@@ -27,30 +28,35 @@ abstract class AbstractIndexingJob implements JobInterface
      * @Flow\Inject
      * @var LoggerInterface
      */
+    #[Flow\Transient]
     protected $logger;
 
     /**
      * @Flow\Inject
      * @var NodeIndexer
      */
+    #[Flow\Transient]
     protected $nodeIndexer;
 
     /**
      * @Flow\Inject
      * @var NodeDataRepository
      */
+    #[Flow\Transient]
     protected $nodeDataRepository;
 
     /**
      * @Flow\Inject
      * @var NodeFactory
      */
+    #[Flow\Transient]
     protected $nodeFactory;
 
     /**
      * @Flow\Inject
      * @var ContextFactoryInterface
      */
+    #[Flow\Transient]
     protected $contextFactory;
 
     /**

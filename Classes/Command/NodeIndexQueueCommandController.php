@@ -9,6 +9,8 @@ use Flowpack\JobQueue\Common\Exception;
 use Flowpack\JobQueue\Common\Job\JobManager;
 use Flowpack\JobQueue\Common\Queue\QueueManager;
 use Neos\ContentRepository\Domain\Model\NodeInterface;
+use Neos\ContentRepository\Domain\Factory\NodeFactory;
+use Neos\ContentRepository\Domain\Projection\Content\TraversableNodeInterface;
 use Neos\ContentRepository\Domain\Service\ContentDimensionCombinator;
 use Neos\ContentRepository\Domain\Service\ContextFactoryInterface;
 use Neos\Flow\Annotations as Flow;
@@ -28,8 +30,8 @@ use Psr\Log\LoggerInterface;
  *   fulltext-root document. Use this instead of the synchronous upstream
  *   `./flow nodeindex:build` on large sites: per-document fulltext extraction
  *   in the upstream command runs in a single long-lived process whose Doctrine
- *   identity map grows unboundedly. The queue path isolates each document in
- *   its own worker invocation, keeping memory flat.
+ *   identity map grows unboundedly. The worker resets its read snapshot before
+ *   each job instead of retaining entities across document extractions.
  *
  * @Flow\Scope("singleton")
  */
@@ -72,6 +74,12 @@ class NodeIndexQueueCommandController extends CommandController
      * @var PersistenceManagerInterface
      */
     protected $persistenceManager;
+
+    /**
+     * @Flow\Inject
+     * @var NodeFactory
+     */
+    protected $nodeFactory;
 
     /**
      * Work the live indexing queue
@@ -117,6 +125,7 @@ class NodeIndexQueueCommandController extends CommandController
             $message = null;
 
             try {
+                $this->resetReadSnapshot();
                 $message = $this->jobManager->waitAndExecute($queueName, $timeout);
                 $consecutiveFailures = 0;
             } catch (\Throwable $exception) {
@@ -167,6 +176,15 @@ class NodeIndexQueueCommandController extends CommandController
         } while (true);
     }
 
+    protected function resetReadSnapshot(): void
+    {
+        // Jobs only read the CR. A long-lived worker must not reuse entities or
+        // context/node caches hydrated before another request published a change.
+        $this->contextFactory->reset();
+        $this->nodeFactory->reset();
+        $this->persistenceManager->clearState();
+    }
+
     /**
      * Enqueue one IndexingJob per fulltext-root document and allowed dimension
      * combination in the live workspace.
@@ -178,7 +196,7 @@ class NodeIndexQueueCommandController extends CommandController
      *
      * The walk only collects node references (not content subtrees), which
      * keeps peak memory well below the synchronous build. Each document is
-     * then fulltext-extracted and written by an isolated job invocation, so
+     * then fulltext-extracted and written with a fresh worker read snapshot, so
      * Doctrine's identity map cannot balloon the way it does in the upstream
      * single-process walk.
      *
@@ -204,10 +222,6 @@ class NodeIndexQueueCommandController extends CommandController
             $this->outputLine('  Dimension: %s', [self::formatDimensionCombination($targetDimensionCombination)]);
             $context = $this->contextFactory->create($contextProperties);
             $rootNode = $context->getRootNode();
-            if ($rootNode === null) {
-                $this->outputLine('<error>Live workspace has no root node.</error>');
-                $this->quit(1);
-            }
 
             $enqueued = $this->enqueueTreeRecursively(
                 $rootNode,
@@ -263,6 +277,9 @@ class NodeIndexQueueCommandController extends CommandController
             }
         }
 
+        if (!$node instanceof TraversableNodeInterface) {
+            throw new \LogicException('Snapshot traversal requires a traversable content repository node.');
+        }
         foreach ($node->findChildNodes() as $childNode) {
             $counter = $this->enqueueTreeRecursively(
                 $childNode,

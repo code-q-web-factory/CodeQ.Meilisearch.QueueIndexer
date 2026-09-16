@@ -119,12 +119,23 @@ them:
 The normal snapshot build remains unchanged. Enabling live asynchronous
 indexing does not enable scheduled reconciliation by itself.
 
-Removal jobs persist the fulltext-root aggregate identifier and every affected
+New runtime indexing, structural repair and removal jobs persist the fulltext-root aggregate identifier and every affected
 dimension combination when they are enqueued. At execution time they replay
 `replaceVariants()` against the live workspace, so deleting a content node
 refreshes its document and deleting a variant preserves unrelated languages.
+The previous root of moved content is captured before publishing, not inferred
+again when the worker runs. Repair jobs therefore still refresh it after the
+content has moved again or its NodeData has disappeared. Injected services are
+explicitly transient and are reinjected by Flow after job deserialization.
+Published removals use the live target workspace even when the originating
+node still belongs to a user workspace.
+
 The worker explicitly flushes the upstream write buffer after every indexing
 and removal job so changes reach Meilisearch immediately.
+Before each job, it clears the read-only CR context/node caches and Doctrine
+identity map. Extraction evaluates visibility at execution time, not worker
+startup time, so later publishes and scheduled boundaries are not read from
+an earlier job's snapshot. Restart existing workers after upgrading both packages.
 
 Jobs queued by version 0.2 contain only an immutable document identifier. They
 continue to use identifier-based deletion and are flushed immediately. Older

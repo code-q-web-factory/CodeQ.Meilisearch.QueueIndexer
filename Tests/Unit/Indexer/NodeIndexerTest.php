@@ -25,8 +25,11 @@ use PHPUnit\Framework\TestCase;
 
 class NodeIndexerTest extends TestCase
 {
-    public function testRemovalPayloadContainsTheFulltextRootAndAffectedDimensions(): void
-    {
+    /** @dataProvider removalWorkspaceCases */
+    public function testRemovalPayloadContainsTheFulltextRootAndAffectedDimensions(
+        string $workspaceName,
+        ?string $targetWorkspace
+    ): void {
         $dimensionCombinations = [
             ['language' => ['de']],
             ['language' => ['de'], 'country' => ['at']],
@@ -34,9 +37,9 @@ class NodeIndexerTest extends TestCase
         $nodeData = $this->createMock(NodeData::class);
         $context = $this->createMock(Context::class);
         $context->method('getDimensions')->willReturn(['language' => ['de']]);
-        $context->method('getWorkspaceName')->willReturn('live');
+        $context->method('getWorkspaceName')->willReturn($workspaceName);
         $workspace = $this->createMock(Workspace::class);
-        $workspace->method('getName')->willReturn('live');
+        $workspace->method('getName')->willReturn($workspaceName);
         $contentNodeType = $this->createMock(NodeType::class);
         $contentNodeType->method('getName')->willReturn('Neos.Neos:Content');
         $contentNodeType->method('hasConfiguration')->with('search')->willReturn(false);
@@ -102,7 +105,16 @@ class NodeIndexerTest extends TestCase
         $this->inject($nodeIndexer, NodeIndexer::class, 'jobManager', $jobManager);
         $this->inject($nodeIndexer, UpstreamNodeIndexer::class, 'dimensionsService', $dimensionsService);
 
-        $nodeIndexer->removeNode($node);
+        $nodeIndexer->removeNode($node, $targetWorkspace);
+    }
+
+    /** @return array<string, array{string, ?string}> */
+    public static function removalWorkspaceCases(): array
+    {
+        return [
+            'live node' => ['live', null],
+            'draft node published to live' => ['user-test', 'live'],
+        ];
     }
 
     public function testSynchronousFallbackForwardsTargetDimensionsToCombinedFixes(): void
@@ -139,7 +151,9 @@ class NodeIndexerTest extends TestCase
         $contextFactory = $this->createMock(ContextFactoryInterface::class);
         $contextFactory->expects(self::once())
             ->method('create')
-            ->with(['workspaceName' => 'live', 'dimensions' => $targetDimensions])
+            ->with(self::callback(static fn(array $properties): bool => $properties['workspaceName'] === 'live'
+                && $properties['dimensions'] === $targetDimensions
+                && $properties['currentDateTime'] instanceof \DateTimeInterface))
             ->willReturn($variantContext);
 
         $nodeIndexer = new NodeIndexer();

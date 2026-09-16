@@ -52,6 +52,9 @@ class NodeIndexer extends UpstreamNodeIndexer
      */
     protected $enableLiveAsyncIndexing = true;
 
+    /** @var bool */
+    protected $synchronousIndexing = false;
+
     /**
      * @param NodeInterface $node
      * @param string|null $targetWorkspace
@@ -78,9 +81,19 @@ class NodeIndexer extends UpstreamNodeIndexer
         }
 
         try {
+            $root = $this->findFulltextRoot($this->requireTraversable($node));
+            if ($root === null) {
+                return;
+            }
+            $combinations = ($indexAllDimensions || $indexFallbackDimensions)
+                ? $this->dimensionsService->getDimensionCombinationsForIndexing($root)
+                : [$targetDimensionCombination !== [] ? $targetDimensionCombination : $node->getContext()->getDimensions()];
             $this->jobManager->queue(
                 NodeIndexQueueCommandController::LIVE_QUEUE_NAME,
-                new IndexingJob($targetWorkspace, $this->nodeAsArray($node))
+                new IndexingJob('live', [
+                    'documentAggregateIdentifier' => $root->getIdentifier(),
+                    'dimensionCombinations' => $combinations,
+                ])
             );
         } catch (\Throwable $exception) {
             // If the job queue backend is unavailable (e.g. DB hiccup, table missing) we
@@ -127,13 +140,41 @@ class NodeIndexer extends UpstreamNodeIndexer
         if ($parentMethod->getNumberOfParameters() >= 5) {
             $arguments[] = $targetDimensionCombination;
         }
-        $parentMethod->invokeArgs($this, $arguments);
+        $this->synchronousIndexing = true;
+        try {
+            $parentMethod->invokeArgs($this, $arguments);
+        } finally {
+            $this->synchronousIndexing = false;
+        }
     }
 
-    public function removeNode(NodeInterface $node): void
+    public function replaceVariants(string $nodeIdentifier, array $dimensionCombinations): void
     {
-        if (!$this->shouldEnqueue($node, null)) {
-            parent::removeNode($node);
+        if (!$this->enableLiveAsyncIndexing || $this->synchronousIndexing) {
+            parent::replaceVariants($nodeIdentifier, $dimensionCombinations);
+            return;
+        }
+        try {
+            $this->jobManager->queue(
+                NodeIndexQueueCommandController::LIVE_QUEUE_NAME,
+                new IndexingJob('live', [
+                    'documentAggregateIdentifier' => $nodeIdentifier,
+                    'dimensionCombinations' => $dimensionCombinations,
+                ])
+            );
+        } catch (\Throwable $exception) {
+            $this->logger->warning(
+                sprintf('Queueing variant repair failed (%s); falling back to synchronous indexing', $exception->getMessage()),
+                LogEnvironment::fromMethodName(__METHOD__)
+            );
+            parent::replaceVariants($nodeIdentifier, $dimensionCombinations);
+        }
+    }
+
+    public function removeNode(NodeInterface $node, $targetWorkspace = null): void
+    {
+        if (!$this->shouldEnqueue($node, $targetWorkspace)) {
+            $this->removeSynchronously($node);
             return;
         }
 
@@ -149,7 +190,17 @@ class NodeIndexer extends UpstreamNodeIndexer
                 sprintf('Queueing removal job failed (%s); falling back to synchronous removal', $exception->getMessage()),
                 LogEnvironment::fromMethodName(__METHOD__)
             );
+            $this->removeSynchronously($node);
+        }
+    }
+
+    protected function removeSynchronously(NodeInterface $node): void
+    {
+        $this->synchronousIndexing = true;
+        try {
             parent::removeNode($node);
+        } finally {
+            $this->synchronousIndexing = false;
         }
     }
 
@@ -198,7 +249,7 @@ class NodeIndexer extends UpstreamNodeIndexer
     protected function removalNodeAsArray(NodeInterface $node, NodeInterface $fulltextRoot): array
     {
         return array_merge($this->nodeAsArray($node), [
-            'documentAggregateIdentifier' => (string) $fulltextRoot->getNodeAggregateIdentifier(),
+            'documentAggregateIdentifier' => (string) $this->requireTraversable($fulltextRoot)->getNodeAggregateIdentifier(),
             'dimensionCombinations' => $this->dimensionsService->getDimensionCombinationsForIndexing($fulltextRoot),
         ]);
     }
