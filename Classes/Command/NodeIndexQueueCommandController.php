@@ -14,6 +14,7 @@ use Neos\ContentRepository\Domain\Service\ContextFactoryInterface;
 use Neos\Flow\Annotations as Flow;
 use Neos\Flow\Cli\CommandController;
 use Neos\Flow\Cli\Exception\StopCommandException;
+use Neos\Flow\Log\ThrowableStorageInterface;
 use Neos\Flow\Log\Utility\LogEnvironment;
 use Neos\Flow\Persistence\PersistenceManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -42,6 +43,12 @@ class NodeIndexQueueCommandController extends CommandController
      * @var LoggerInterface
      */
     protected $logger;
+
+    /**
+     * @Flow\Inject
+     * @var ThrowableStorageInterface
+     */
+    protected $throwableStorage;
 
     /**
      * @Flow\Inject
@@ -131,13 +138,17 @@ class NodeIndexQueueCommandController extends CommandController
                 $previous = $exception->getPrevious();
                 if ($previous instanceof \Throwable) {
                     $verbose && $this->outputLine('  Reason: %s', [$previous->getMessage()]);
-                    $this->logger->error(
-                        sprintf('Meilisearch indexing job failed: %s. Reason: %s', $exception->getMessage(), $previous->getMessage()),
-                        LogEnvironment::fromMethodName(__METHOD__)
-                    );
-                } else {
-                    $this->logger->error('Meilisearch indexing job failed: ' . $exception->getMessage(), LogEnvironment::fromMethodName(__METHOD__));
                 }
+                if ($consecutiveFailures === 1) {
+                    // Only the first failure of a streak keeps its stack trace: a broken backend
+                    // fails every retry and would otherwise store one dump or error event per attempt.
+                    $details = $this->throwableStorage->logThrowable($exception);
+                } elseif ($previous instanceof \Throwable) {
+                    $details = sprintf('%s. Reason: %s', $exception->getMessage(), $previous->getMessage());
+                } else {
+                    $details = $exception->getMessage();
+                }
+                $this->logger->error('Meilisearch indexing job failed: ' . $details, LogEnvironment::fromMethodName(__METHOD__));
 
                 // 1s, 2s, 4s, 8s, 10s, 10s... capped so we never disappear for a long time.
                 $sleepSeconds = min(2 ** min($consecutiveFailures - 1, 3), $maxBackoffSeconds);

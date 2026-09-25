@@ -18,11 +18,60 @@ use Neos\ContentRepository\Domain\Projection\Content\TraversableNodes;
 use Neos\ContentRepository\Domain\Service\ContentDimensionCombinator;
 use Neos\ContentRepository\Domain\Service\Context;
 use Neos\ContentRepository\Domain\Service\ContextFactoryInterface;
+use Neos\Flow\Cli\Exception\StopCommandException;
+use Neos\Flow\Cli\Response;
+use Neos\Flow\Log\ThrowableStorageInterface;
 use Neos\Flow\Persistence\PersistenceManagerInterface;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 
 class NodeIndexQueueCommandControllerTest extends TestCase
 {
+    public function testWorkStoresTheStackTraceOnlyForTheFirstFailureOfAStreak(): void
+    {
+        $firstFailure = new \RuntimeException('first failure', 0, new \RuntimeException('first reason'));
+        $secondFailure = new \RuntimeException('second failure', 0, new \RuntimeException('second reason'));
+
+        $jobManager = $this->createMock(JobManager::class);
+        $jobManager->expects(self::exactly(2))
+            ->method('waitAndExecute')
+            ->will(self::onConsecutiveCalls(self::throwException($firstFailure), self::throwException($secondFailure)));
+
+        $throwableStorage = $this->createMock(ThrowableStorageInterface::class);
+        $throwableStorage->expects(self::once())
+            ->method('logThrowable')
+            ->with(self::identicalTo($firstFailure))
+            ->willReturn('first failure - See also: stored-trace.txt');
+
+        $loggedErrors = [];
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->method('error')
+            ->willReturnCallback(static function (string $message) use (&$loggedErrors): void {
+                $loggedErrors[] = $message;
+            });
+
+        $controller = new class extends NodeIndexQueueCommandController {
+            protected function outputLine(string $text = '', array $arguments = [])
+            {
+            }
+        };
+        $this->inject($controller, 'jobManager', $jobManager);
+        $this->inject($controller, 'throwableStorage', $throwableStorage);
+        $this->inject($controller, 'logger', $logger);
+        $this->inject($controller, 'response', new Response());
+
+        try {
+            $controller->workCommand(null, 2);
+            self::fail('The worker must quit once --limit is reached.');
+        } catch (StopCommandException $exception) {
+        }
+
+        self::assertSame([
+            'Meilisearch indexing job failed: first failure - See also: stored-trace.txt',
+            'Meilisearch indexing job failed: second failure. Reason: second reason',
+        ], $loggedErrors);
+    }
+
     public function testBuildEnqueuesEveryAllowedDimensionWithExplicitSnapshotSemantics(): void
     {
         $germanDimensions = ['language' => ['de']];
