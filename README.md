@@ -57,11 +57,27 @@ Set up the queue after installing:
 
 ## Commands
 
-Drain the live indexing queue:
+Run the live indexing worker as a daemon. It waits for new jobs and never
+returns on its own, so this is the production form (see
+[Production Worker](#production-worker)):
 
 ```bash
 ./flow nodeindexqueue:work --verbose
 ```
+
+Drain the queue once and return - the form to use after a build:
+
+```bash
+./flow nodeindexqueue:work --exit-when-empty --verbose
+```
+
+`--limit N` is not a drain: it stops after N job *executions*, failed
+executions included, and it keeps waiting for new jobs until that many have
+run. A limit above the number of queued jobs is therefore never reached and
+the worker blocks. Combine it with `--exit-when-empty` if you want both a
+work budget and a guaranteed return. Every exit prints what is left in the
+queue, so a run that stopped on its budget cannot be mistaken for a finished
+drain.
 
 Enqueue all fulltext-root documents from every allowed content-dimension
 combination in the live workspace:
@@ -80,6 +96,32 @@ Inspect queue state:
 ```bash
 ./flow nodeindexqueue:status
 ```
+
+The counters are the three states the JobQueue backend stores, labelled with
+those state names, and the output also names the backend and its table:
+
+```
+CodeQ.Meilisearch.QueueIndexer.Live
+  Backend          : Flowpack\JobQueue\Doctrine\Queue\DoctrineQueue
+  Table            : codeq_meilisearch_queueindexer_live
+  state "ready"    : 3  waiting for a worker, including jobs released for a retry
+  state "reserved" : 1  currently held by a worker
+  state "failed"   : 2  given up after 4 attempts
+  rows in total    : 6
+```
+
+Point SQL at the table named there, not at a table from an earlier indexer -
+a count taken from a leftover `flowpack_jobqueue_*` table is what makes a
+correct report look wrong:
+
+```sql
+select state, count(*) from codeq_meilisearch_queueindexer_live group by state;
+```
+
+`ready` does not mean "never tried". The JobManager releases a failing job back
+to `ready` and increments its failure counter until `maximumNumberOfReleases`
+is spent; only then does it become `failed`. A rebuild is applied once all
+three counters are zero - not once `failed` looks small.
 
 Flush the live queue:
 
@@ -162,7 +204,11 @@ Medienreaktor\Meilisearch\Indexer\NodeIndexer:
 
 ## Production Worker
 
-Run `nodeindexqueue:work` continuously in production. For Beach-style deployments, wrap it in a restart loop so the worker comes back after PHP exits:
+Run `nodeindexqueue:work` continuously in production, without
+`--exit-when-empty`: a live worker must keep waiting when the queue is
+momentarily empty, or a supervisor would restart it every few seconds on an
+idle site. For Beach-style deployments, wrap it in a restart loop so the worker
+comes back after PHP exits:
 
 ```bash
 while true; do
