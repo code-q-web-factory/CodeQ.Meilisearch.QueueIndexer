@@ -26,7 +26,8 @@ use Psr\Log\LoggerInterface;
  *
  * - `nodeindexqueue:work`   drains jobs produced by
  *   {@see \CodeQ\Meilisearch\QueueIndexer\Indexer\NodeIndexer} and executed by
- *   {@see \CodeQ\Meilisearch\QueueIndexer\IndexingJob}.
+ *   {@see \CodeQ\Meilisearch\QueueIndexer\IndexingJob}. It is a daemon unless
+ *   `--exit-when-empty` is given.
  * - `nodeindexqueue:build`  walks the live tree once and enqueues one job per
  *   fulltext-root document. Use this instead of the synchronous upstream
  *   `./flow nodeindex:build` on large sites: per-document fulltext extraction
@@ -91,14 +92,28 @@ class NodeIndexQueueCommandController extends CommandController
     /**
      * Work the live indexing queue
      *
+     * By default this is a daemon: when the queue runs dry the worker keeps
+     * waiting for new jobs, and only `--exit-after` or `--limit` ever stop it.
+     * That is what production wants for live indexing, but it makes the worker
+     * unusable for draining a finite batch, because `--limit` counts *executed*
+     * jobs: a limit that is higher than the number of queued jobs is never
+     * reached and the command blocks forever. Pass `--exit-when-empty` to drain
+     * the queue once and return - that is the mode to use after
+     * `nodeindexqueue:build`.
+     *
      * @param int|null $exitAfter If set, stop after this many seconds
-     * @param int|null $limit Process at most this many jobs (successful or failed) before exiting
+     * @param int|null $limit Stop after this many job executions. Failed executions count towards the limit, and on its own the limit never stops a worker whose queue holds fewer jobs - combine it with --exit-when-empty
      * @param bool $verbose Print per-job debugging information
+     * @param bool $exitWhenEmpty Stop as soon as no job can be reserved any more instead of waiting for new ones. Use this to drain the queue
      * @return void
      * @throws StopCommandException
      */
-    public function workCommand(?int $exitAfter = null, ?int $limit = null, bool $verbose = false): void
-    {
+    public function workCommand(
+        ?int $exitAfter = null,
+        ?int $limit = null,
+        bool $verbose = false,
+        bool $exitWhenEmpty = false
+    ): void {
         $queueName = self::LIVE_QUEUE_NAME;
 
         if ($exitAfter !== null && $exitAfter <= 0) {
@@ -111,9 +126,10 @@ class NodeIndexQueueCommandController extends CommandController
         }
 
         if ($verbose) {
-            $this->outputLine('Watching queue <b>"%s"</b>%s', [
+            $this->outputLine('Watching queue <b>"%s"</b>%s%s', [
                 $queueName,
                 $exitAfter !== null ? sprintf(' for <b>%d</b> seconds', $exitAfter) : '',
+                $exitWhenEmpty ? ' until it is empty' : '',
             ]);
         }
 
@@ -129,7 +145,13 @@ class NodeIndexQueueCommandController extends CommandController
             $timeout = $exitAfter !== null
                 ? max(1, $exitAfter - (time() - $startTime))
                 : null;
+            if ($exitWhenEmpty) {
+                // Poll in short slices so an empty queue is noticed within about a second
+                // instead of after the backend's own reserve timeout (60s for DoctrineQueue).
+                $timeout = $timeout !== null ? min($timeout, 1) : 1;
+            }
             $message = null;
+            $executionFailed = false;
 
             try {
                 $this->resetReadSnapshot();
@@ -140,6 +162,9 @@ class NodeIndexQueueCommandController extends CommandController
                 // AssertionError raised inside a job during node rehydration - do not escape
                 // and crash the worker loop. This keeps --limit / --exit-after honoured even
                 // when a single job is malformed.
+                // A failure also means the queue was not empty, so --exit-when-empty must not
+                // read this iteration's null message as a drained queue.
+                $executionFailed = true;
                 $numberOfJobExecutions++;
                 $consecutiveFailures++;
                 $verbose && $this->outputLine('<error>%s</error>', [$exception->getMessage()]);
@@ -176,15 +201,50 @@ class NodeIndexQueueCommandController extends CommandController
             }
 
             if ($exitAfter !== null && (time() - $startTime) >= $exitAfter) {
-                $verbose && $this->outputLine('Quitting after %d seconds due to --exit-after', [time() - $startTime]);
+                $this->outputRemainingQueueDepth(
+                    sprintf('Quitting after %d seconds due to --exit-after', time() - $startTime)
+                );
                 $this->quit();
             }
 
             if ($limit !== null && $numberOfJobExecutions >= $limit) {
-                $verbose && $this->outputLine('Quitting after %d job%s due to --limit', [$numberOfJobExecutions, $numberOfJobExecutions > 1 ? 's' : '']);
+                $this->outputRemainingQueueDepth(sprintf(
+                    'Quitting after %d job execution%s due to --limit',
+                    $numberOfJobExecutions,
+                    $numberOfJobExecutions === 1 ? '' : 's'
+                ));
+                $this->quit();
+            }
+
+            if ($exitWhenEmpty && $message === null && $executionFailed === false) {
+                $this->outputRemainingQueueDepth('Quitting due to --exit-when-empty: no job left to reserve');
                 $this->quit();
             }
         } while (true);
+    }
+
+    /**
+     * Print why the worker stops together with what is still in the queue.
+     *
+     * Every exit path needs this: `--limit` and `--exit-after` stop on a budget,
+     * not on an empty queue, and even `--exit-when-empty` only proves that
+     * nothing was reservable in the last poll - another worker can hold reserved
+     * jobs, and a job released with a delay stays "ready" until it is due. Saying
+     * so here is what keeps an aborted drain from looking finished.
+     */
+    protected function outputRemainingQueueDepth(string $reason): void
+    {
+        try {
+            $queue = $this->queueManager->getQueue(self::LIVE_QUEUE_NAME);
+            $this->outputLine('%s. Queue left at ready: %d, reserved: %d, failed: %d', [
+                $reason,
+                $queue->countReady(),
+                $queue->countReserved(),
+                $queue->countFailed(),
+            ]);
+        } catch (\Throwable $exception) {
+            $this->outputLine('%s. Queue depth unavailable: %s', [$reason, $exception->getMessage()]);
+        }
     }
 
     protected function resetReadSnapshot(): void
@@ -203,7 +263,13 @@ class NodeIndexQueueCommandController extends CommandController
      * Use this as a memory-safe alternative to `./flow nodeindex:build`. Once it
      * returns, start a worker to actually process the jobs:
      *
-     *     ./flow nodeindexqueue:work --verbose
+     *     ./flow nodeindexqueue:work --exit-when-empty --verbose
+     *
+     * `--exit-when-empty` is what makes that worker return. Without it the worker
+     * is a daemon that waits for more jobs forever, and `--limit` does not help:
+     * it stops after that many *executions*, so a limit above the number of queued
+     * jobs is never reached. Check the result with `nodeindexqueue:status`; the
+     * build is applied once ready, reserved and failed are all zero.
      *
      * The walk only collects node references (not content subtrees), which
      * keeps peak memory well below the synchronous build. Each document is
@@ -244,7 +310,7 @@ class NodeIndexQueueCommandController extends CommandController
         }
 
         $this->outputLine('<success>Enqueued %d job%s.</success>', [$enqueued, $enqueued === 1 ? '' : 's']);
-        $this->outputLine('Drain with: ./flow nodeindexqueue:work --verbose');
+        $this->outputLine('Drain with: ./flow nodeindexqueue:work --exit-when-empty --verbose');
     }
 
     /**
@@ -342,17 +408,60 @@ class NodeIndexQueueCommandController extends CommandController
 
     /**
      * Print queue depth counters
+     *
+     * The counters are the three states the JobQueue backend actually stores, and
+     * they are labelled with those state names so the output can be compared with
+     * the backend without guessing. The resolved backend class and - for a Doctrine
+     * queue - the table name are printed too, because the queue table is a
+     * configuration detail: cross-checking a count against a leftover table from an
+     * earlier indexer is what makes a correct count look wrong.
+     *
+     *     select state, count(*) from <table> group by state
+     *
+     * "ready" does not mean "never tried". The JobManager releases a failing job
+     * back to "ready" and increments its failure counter until
+     * maximumNumberOfReleases is exhausted; only then does it become "failed". A
+     * rebuild is therefore finished when all three counters are zero, not when
+     * "failed" looks small.
      */
     public function statusCommand(): void
     {
-        $this->outputLine('<b>%s</b>', [self::LIVE_QUEUE_NAME]);
+        $queueName = self::LIVE_QUEUE_NAME;
+        $this->outputLine('<b>%s</b>', [$queueName]);
+
         try {
-            $queue = $this->queueManager->getQueue(self::LIVE_QUEUE_NAME);
-            $this->outputLine('  Pending jobs  : %s', [$queue->countReady()]);
-            $this->outputLine('  Reserved jobs : %s', [$queue->countReserved()]);
-            $this->outputLine('  Failed jobs   : %s', [$queue->countFailed()]);
-        } catch (Exception $exception) {
-            $this->outputLine('  Queue not available: %s', [$exception->getMessage()]);
+            $queue = $this->queueManager->getQueue($queueName);
+            $queueSettings = $this->queueManager->getQueueSettings($queueName);
+            $ready = $queue->countReady();
+            $reserved = $queue->countReserved();
+            $failed = $queue->countFailed();
+        } catch (\Throwable $exception) {
+            // Not just Flowpack's Exception: an unconfigured queue throws that one, but a
+            // missing table throws \RuntimeException and a dead connection a DBAL exception.
+            // Those used to escape and bury the cause under a Flow stack trace.
+            $this->outputLine('  <error>Queue not available: %s</error>', [$exception->getMessage()]);
+            return;
+        }
+
+        $maximumNumberOfAttempts = 1 + (int)($queueSettings['maximumNumberOfReleases']
+            ?? JobManager::DEFAULT_MAXIMUM_NUMBER_RELEASES);
+        $tableName = $queueSettings['options']['tableName'] ?? null;
+
+        $this->outputLine('  Backend          : %s', [$queueSettings['className'] ?? get_class($queue)]);
+        if (is_string($tableName) && $tableName !== '') {
+            $this->outputLine('  Table            : %s', [$tableName]);
+        }
+        $this->outputLine('  state "ready"    : %d  waiting for a worker, including jobs released for a retry', [$ready]);
+        $this->outputLine('  state "reserved" : %d  currently held by a worker', [$reserved]);
+        $this->outputLine('  state "failed"   : %d  given up after %d attempt%s', [
+            $failed,
+            $maximumNumberOfAttempts,
+            $maximumNumberOfAttempts === 1 ? '' : 's',
+        ]);
+        $this->outputLine('  rows in total    : %d', [$ready + $reserved + $failed]);
+
+        if ($ready + $reserved + $failed === 0) {
+            $this->outputLine('  <success>Queue is empty.</success>');
         }
     }
 
